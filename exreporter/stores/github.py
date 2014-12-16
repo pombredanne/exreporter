@@ -12,9 +12,14 @@ This module implements Github issue store for exporter.
 
 import json
 import pytz
+import logging
 import datetime
 import requests
+
 from dateutil.tz import tzlocal
+
+log = logging.getLogger(__name__)
+log.setLevel(logging.DEBUG)
 
 
 class GithubCredentials(object):
@@ -78,13 +83,16 @@ class GithubStore(object):
         :rtype: list
 
         """
+        log.debug("Searching for '{}' in github issues".format(q))
         search_result = self.github_request.search(q=q, state=state, **kwargs)
-        if search_result['total_count'] > 0:
+        result_count = search_result.get('total_count', 0)
+        if result_count:
             return list(
                 map(lambda issue_dict: GithubIssue(
                     github_request=self.github_request, **issue_dict),
                     search_result['items'])
             )
+        log.debug("Search complete with {} results".format(result_count))
 
     def handle_issue_comment(self, issue, title, body, **kwargs):
         """Decides whether to comment or create a new issue when trying to comment.
@@ -101,7 +109,10 @@ class GithubStore(object):
                 issue.comment(body=body)
                 return issue
             else:
+                log.debug("Comments greater than threshold.")
                 return self.create_issue(title=title, body=body, **kwargs)
+        log.debug(
+            "Occured in time detla, no action taken for #{}".format(issue.id))
 
     def _is_time_delta_valid(self, delta):
         return delta > self.time_delta
@@ -115,6 +126,7 @@ class GithubStore(object):
         :returns: newly created issue
         :rtype: :class:`exreporter.stores.github.GithubIssue`
         """
+        log.debug("Creating a new issue on Github.")
         kwargs = self.github_request.create(
             title=title, body=body, labels=labels)
         return GithubIssue(github_request=self.github_request, **kwargs)
@@ -155,6 +167,7 @@ class GithubIssue(object):
     def open_issue(self):
         """Changes the state of issue to 'open'.
         """
+        log.debug("Issue was closed, opening it now.")
         self.github_request.update(issue=self, state='open')
         self.state = 'open'
 
@@ -165,6 +178,7 @@ class GithubIssue(object):
         :returns: issue object
         :rtype: :class:`exreporter.stores.github.GithubIssue`
         """
+        log.debug("Commenting on issue #{}".format(self.id))
         self.github_request.comment(issue=self, body=body)
 
         if self.state == 'closed':
@@ -214,9 +228,16 @@ class GithubRequest(object):
         if labels:
             data.update({'labels': labels})
 
+        log.debug("Sending POST data to Github.")
         response = self.session.post(url, json.dumps(data))
 
-        assert response.status_code == 201
+        if response.status_code not in (201, ):
+            log.info(
+                "Github returned {} with {}".format(
+                    response.status_code, response.content)
+            )
+        else:
+            log.debug("Issue created on Github.")
         return json.loads(response.content)
 
     def comment(self, issue, body):
